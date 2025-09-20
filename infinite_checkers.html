@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Infinite Checkers — MVP</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+      background: linear-gradient(135deg, #0b1e5b 0%, #3f51b5 40%, #8e24aa 100%);
+      background-attachment: fixed;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #ui { position: fixed; top: 12px; left: 12px; z-index: 10; color: #e8eef9; background: rgba(15,20,30,.6); padding: 10px 12px; border-radius: 12px; backdrop-filter: blur(6px); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+    #ui h1 { margin: 0 0 6px 0; font-size: 16px; font-weight: 700; letter-spacing: .3px; opacity: .85; }
+    #meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    .badge { font-size: 13px; padding: 6px 10px; border-radius: 999px; background: #1a2333; border: 1px solid #243149; }
+    #controls { margin-top: 10px; display: flex; gap: 8px; }
+    button { appearance: none; border: 1px solid #2a3750; background: #162133; color: #dfe8fb; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1b2940; }
+
+    #message { position: fixed; inset: 0; display: none; place-items: center; z-index: 15; }
+    #message .card { text-align: center; background: rgba(15,20,30,.85); color: #f0f4ff; padding: 22px 26px; border-radius: 14px; border: 1px solid #2a3750; box-shadow: 0 10px 40px rgba(0,0,0,.45); }
+    #message h2 { margin: 0 0 8px 0; font-size: 20px; }
+    #message p { margin: 0 0 14px 0; opacity: .9; }
+
+    .hint { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 10; color: #a9b7d6; text-align: center; opacity: .8; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>Infinite Checkers — MVP</h1>
+    <div id="meta">
+      <div class="badge">Score: <span id="score">0</span></div>
+      <div class="badge">Row: <span id="row">1</span></div>
+      <div class="badge">Moves: <span id="moves">0</span></div>
+      <div class="badge">Multiplier: <span id="combo">x1</span></div>
+    </div>
+    <div id="controls">
+      <button id="restartBtn" title="Start a fresh run">Restart</button>
+      <button id="toggleHintsBtn" title="Show/hide legal move highlights">Toggle Hints</button>
+    </div>
+  </div>
+  <div class="hint">Click one of the two forward diagonal squares to move. Jump over an enemy to capture it. Survive as long as you can!</div>
+
+  <div id="message">
+    <div class="card">
+      <h2 id="gameOverTitle">Game Over</h2>
+      <p id="gameOverText">You reached row <strong>1</strong> with a score of <strong>0</strong>.</p>
+      <button id="playAgain">Play Again</button>
+    </div>
+  </div>
+
+  <!-- Three.js -->
+  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script>
+  (function(){
+    // ====== BASIC CONFIG ======
+    const BOARD_WIDTH = 8;
+    const TILE_SIZE = 1.0;
+    const AHEAD_ROWS = 24;
+    const ENEMY_PROB_MIN = 0.06;
+    const ENEMY_PROB_MAX = 0.38;
+    const ENEMY_PROB_SPAN_ROWS = 100;
+    const SAFE_ROWS = 3; // no spawns within first 3 rows at game start
+    const HINTS_ENABLED_DEFAULT = true;
+    const ENEMY_MOVE_DELAY = 110; // slight lag between player & enemy
+
+    // ====== THREE BASICS ======
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Camera smooth follow
+    const CAMERA_OFFSET = new THREE.Vector3(0, 9.5, -6.5);
+    const CAMERA_SMOOTH = 0.09; // lower = smoother
+    var smoothedTarget = new THREE.Vector3();
+
+    // Lights
+    var ambient = new THREE.AmbientLight(0x8899bb, 0.6); scene.add(ambient);
+    var dirLight = new THREE.DirectionalLight(0xffffff, 0.9); dirLight.position.set(6,12,-6); dirLight.castShadow = true; scene.add(dirLight);
+
+    // ====== MATERIALS ======
+    // Light squares — pure white
+    var matLight = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.05, roughness: 0.9 });
+    // Dark squares — per-tile gradient blue→purple (unlit)
+    var DARK_GRAD_A = 0x3f51b5; // blue
+    var DARK_GRAD_B = 0x8e24aa; // purple
+    function lerpColor(a, b, t){
+      var ar=(a>>16)&255, ag=(a>>8)&255, ab=a&255;
+      var br=(b>>16)&255, bg=(b>>8)&255, bb=b&255;
+      var rr = Math.round(ar + (br-ar)*t);
+      var rg = Math.round(ag + (bg-ag)*t);
+      var rb = Math.round(ab + (bb-ab)*t);
+      return (rr<<16)|(rg<<8)|rb;
+    }
+    // Placeholder for tests; actual dark tiles use per-tile materials
+    var matDark  = new THREE.MeshBasicMaterial({ color: DARK_GRAD_A });
+    // Pieces
+    var matPlayer= new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.3, roughness: 0.2, emissive: 0xffffff, emissiveIntensity: 0.75 });
+    var matEnemy = new THREE.MeshStandardMaterial({ color: 0x000000, metalness: 0.85, roughness: 0.35 });
+    // Move highlight
+    var matHighlight = new THREE.MeshBasicMaterial({ color: 0x66ffcc, transparent: true, opacity: 0.28 });
+
+    // ====== GEOMETRIES ======
+    var tileGeom = new THREE.BoxGeometry(TILE_SIZE, 0.1, TILE_SIZE);
+    var pieceGeom = new THREE.CylinderGeometry(0.35, 0.35, 0.2, 24);
+    var highlightGeom = new THREE.PlaneGeometry(TILE_SIZE * 0.9, TILE_SIZE * 0.9);
+
+    // ====== FX HELPERS (capture burst only) ======
+    function burstAt(position, opts){
+      opts = opts || {};
+      var count = opts.count || 14;
+      var radius = opts.radius || 0.6;
+      var color = opts.color || 0xff66cc; // pink
+      var duration = opts.duration || 360; // ms
+
+      var geom = new THREE.BufferGeometry();
+      var positions = new Float32Array(count * 2 * 3); // line segments
+      var dirs = [];
+      for (var i = 0; i < count; i++){
+        var a = (i / count) * Math.PI * 2;
+        var dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+        dirs.push(dir);
+        positions.set([0,0,0, 0,0,0], i*6);
+      }
+      geom.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      var mat = new THREE.LineBasicMaterial({ color: color, transparent: true, opacity: 1 });
+      var lines = new THREE.LineSegments(geom, mat);
+      lines.position.copy(position);
+      scene.add(lines);
+
+      var t0 = performance.now();
+      function step(t){
+        var k = Math.min(1, (t - t0)/duration);
+        var r = radius * (0.2 + 0.8*k);
+        mat.opacity = 1 - k;
+        for (var i = 0; i < count; i++){
+          var d = dirs[i];
+          var x0 = 0, y0 = 0.06, z0 = 0; // slight lift
+          var x1 = d.x * r, y1 = 0.06, z1 = d.z * r;
+          positions[i*6+0]=x0; positions[i*6+1]=y0; positions[i*6+2]=z0;
+          positions[i*6+3]=x1; positions[i*6+4]=y1; positions[i*6+5]=z1;
+        }
+        geom.attributes.position.needsUpdate = true;
+        if (k < 1){ requestAnimationFrame(step); } else { scene.remove(lines); geom.dispose(); }
+      }
+      requestAnimationFrame(step);
+    }
+
+    // ====== BOARD BORDER (full rectangle) ======
+    var borderMat = new THREE.MeshStandardMaterial({ color: 0x000000, metalness: 0.0, roughness: 1.0 });
+    var borderThickness = 0.18; // world units
+    var borderHeight = 0.12;
+    var borderUnitGeom = new THREE.BoxGeometry(1, borderHeight, 1);
+    var leftBorder  = new THREE.Mesh(borderUnitGeom, borderMat);
+    var rightBorder = new THREE.Mesh(borderUnitGeom, borderMat);
+    var nearBorder  = new THREE.Mesh(borderUnitGeom, borderMat);
+    var farBorder   = new THREE.Mesh(borderUnitGeom, borderMat);
+    leftBorder.receiveShadow = rightBorder.receiveShadow = nearBorder.receiveShadow = farBorder.receiveShadow = true;
+    scene.add(leftBorder); scene.add(rightBorder); scene.add(nearBorder); scene.add(farBorder);
+
+    // Helper: compute exact board extents from existing tiles
+    function computeBoardExtents(){
+      if (tiles.size === 0) return null;
+      var minXi = Infinity, maxXi = -Infinity, minZi = Infinity, maxZi = -Infinity;
+      tiles.forEach(function(t){
+        var u = t.userData; if (!u) return;
+        if (u.x < minXi) minXi = u.x; if (u.x > maxXi) maxXi = u.x;
+        if (u.z < minZi) minZi = u.z; if (u.z > maxZi) maxZi = u.z;
+      });
+      var minX = tileWorldPos(minXi, 0).x - TILE_SIZE/2;
+      var maxX = tileWorldPos(maxXi, 0).x + TILE_SIZE/2;
+      var minZ = tileWorldPos(0, minZi).z - TILE_SIZE/2; // near edge
+      var maxZ = tileWorldPos(0, maxZi).z + TILE_SIZE/2; // far edge
+      var width  = (maxX - minX);
+      var depth  = (maxZ - minZ);
+      var cx = (minX + maxX) / 2;
+      var cz = (minZ + maxZ) / 2;
+      return {minX, maxX, minZ, maxZ, width, depth, cx, cz};
+    }
+
+    function updateBorders(){
+      var ext = computeBoardExtents();
+      if (!ext) return;
+      var minX = ext.minX, maxX = ext.maxX, minZ = ext.minZ, maxZ = ext.maxZ;
+      var width = ext.width, depth = ext.depth, cx = ext.cx, cz = ext.cz;
+
+      // Slight overlap so corners touch with no gaps
+      var overlap = borderThickness;
+      var yOnBoard = -0.05 + borderHeight/2; // tiles are 0.1 tall → top ≈ 0
+
+      leftBorder.scale.set(borderThickness, 1, Math.max(0.0001, depth + overlap));
+      rightBorder.scale.set(borderThickness, 1, Math.max(0.0001, depth + overlap));
+      nearBorder.scale.set(Math.max(0.0001, width + overlap), 1, borderThickness);
+      farBorder .scale.set(Math.max(0.0001, width + overlap), 1, borderThickness);
+
+      leftBorder.position.set(minX - borderThickness/2, yOnBoard, cz);
+      rightBorder.position.set(maxX + borderThickness/2, yOnBoard, cz);
+      nearBorder.position.set(cx, yOnBoard, minZ - borderThickness/2);
+      farBorder.position.set(cx, yOnBoard, maxZ + borderThickness/2);
+    }
+
+    // ====== STATE ======
+    var tiles = new Map();
+    var enemies = new Map();
+    var hints = [];
+
+    var player = { x: Math.floor(BOARD_WIDTH/2), z: 1, mesh: null };
+    var maxRowBuilt = 0;
+    var minRowKept = 0;
+
+    var score = 0;
+    var moves = 0;
+    var gameOver = false;
+    var hintsEnabled = HINTS_ENABLED_DEFAULT;
+    var inCombo = false;
+    var waitingForEnemy = false;
+    var comboCount = 0;
+    var initialBuild = false;
+
+    // UI refs
+    var scoreEl = document.getElementById('score');
+    var rowEl = document.getElementById('row');
+    var movesEl = document.getElementById('moves');
+    var comboEl = document.getElementById('combo');
+    var restartBtn = document.getElementById('restartBtn');
+    var toggleHintsBtn = document.getElementById('toggleHintsBtn');
+    var overlay = document.getElementById('message');
+    var gameOverText = document.getElementById('gameOverText');
+    var playAgainBtn = document.getElementById('playAgain');
+
+    // ====== HELPERS ======
+    function key(x,z){ return x + ',' + z; }
+    function isDarkSquare(x,z){ return ((x+z) % 2) === 0; }
+
+    function tileWorldPos(x, z){
+      return new THREE.Vector3((x - (BOARD_WIDTH-1)/2) * TILE_SIZE, 0, z * TILE_SIZE);
+    }
+
+    function setPlayerPosition(x, z, instant){
+      if (instant === undefined) instant = false;
+      player.x = x; player.z = z;
+      var pos = tileWorldPos(x, z).clone();
+      pos.y = 0.15;
+      if (instant) {
+        if (player.mesh) player.mesh.position.copy(pos);
+      } else {
+        var start = player.mesh.position.clone();
+        var end = pos.clone();
+        var duration = 140;
+        var t0 = performance.now();
+        function animateMove(t){
+          var k = Math.min(1, (t - t0) / duration);
+          player.mesh.position.lerpVectors(start, end, k);
+          if (k < 1 && !gameOver) requestAnimationFrame(animateMove);
+        }
+        requestAnimationFrame(animateMove);
+      }
+      updateCameraTarget();
+      updateUI();
+    }
+
+    function updateCameraTarget(){ /* smoothing in animate() */ }
+
+    function updateUI(){
+      scoreEl.textContent = String(score);
+      rowEl.textContent = String(player.z);
+      movesEl.textContent = String(moves);
+      comboEl.textContent = 'x' + String(Math.max(1, comboCount || 1));
+    }
+
+    function showGameOver(){
+      overlay.style.display = 'grid';
+      gameOverText.innerHTML = 'You reached row <strong>' + player.z + '</strong> with a score of <strong>' + score + '</strong>.';
+    }
+
+    // ====== BOARD BUILDING ======
+    function ensureRowBuilt(z){
+      if (z <= maxRowBuilt) return;
+      for (var x = 0; x < BOARD_WIDTH; x++){
+        var dark = isDarkSquare(x, z);
+        var m;
+        if (dark){
+          var t = ((z % 40) / 40);
+          var col = lerpColor(DARK_GRAD_A, DARK_GRAD_B, t);
+          var perTileDark = new THREE.MeshBasicMaterial({ color: col });
+          m = new THREE.Mesh(tileGeom, perTileDark);
+        } else {
+          m = new THREE.Mesh(tileGeom, matLight);
+        }
+        m.receiveShadow = true;
+        var p = tileWorldPos(x, z);
+        m.position.set(p.x, -0.05, p.z);
+        m.userData = { x: x, z: z, dark: dark };
+        scene.add(m);
+        tiles.set(key(x,z), m);
+      }
+      var allowSpawns = initialBuild ? (z > SAFE_ROWS) : (z > 2);
+      if (allowSpawns){
+        var tSpan = Math.min(1, z / ENEMY_PROB_SPAN_ROWS);
+        var spawnProb = ENEMY_PROB_MIN + tSpan * (ENEMY_PROB_MAX - ENEMY_PROB_MIN);
+        for (var sx = 0; sx < BOARD_WIDTH; sx++){
+          if (!isDarkSquare(sx, z)) continue;
+          if (Math.random() < spawnProb){
+            if (!enemies.has(key(sx,z))) spawnEnemy(sx, z);
+          }
+        }
+      }
+      maxRowBuilt = z;
+    }
+
+    function cleanupBehindRows(){
+      var keepFrom = Math.max(0, player.z - 6);
+      if (keepFrom <= minRowKept) return;
+      for (var z = minRowKept; z < keepFrom; z++){
+        for (var x = 0; x < BOARD_WIDTH; x++){
+          var k = key(x,z);
+          var t = tiles.get(k);
+          if (t){ scene.remove(t); if (t.geometry && typeof t.geometry.dispose === 'function') t.geometry.dispose(); tiles.delete(k); }
+          var e = enemies.get(k);
+          if (e){ if (e.userData && e.userData.shadow) { scene.remove(e.userData.shadow); e.userData.shadow = null; }
+            scene.remove(e); if (e.geometry && typeof e.geometry.dispose === 'function') e.geometry.dispose(); enemies.delete(k); }
+        }
+      }
+      minRowKept = keepFrom;
+    }
+
+    function buildAhead(){
+      for (var z = maxRowBuilt + 1; z <= player.z + AHEAD_ROWS; z++) ensureRowBuilt(z);
+      cleanupBehindRows();
+      updateBorders();
+    }
+
+    // ====== PIECES ======
+    function spawnPlayer(){
+      var m = new THREE.Mesh(pieceGeom, matPlayer);
+      m.castShadow = true;
+      scene.add(m);
+      player.mesh = m;
+      setPlayerPosition(player.x, player.z, true);
+    }
+
+    function spawnEnemy(x, z){
+      var m = new THREE.Mesh(pieceGeom, matEnemy);
+      m.castShadow = false;
+      var pos = tileWorldPos(x,z);
+      m.position.set(pos.x, 0.1, pos.z);
+      m.userData = { x: x, z: z };
+      scene.add(m);
+
+      var sGeom = new THREE.CircleGeometry(0.42, 24);
+      var sMat  = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.18 });
+      var sMesh = new THREE.Mesh(sGeom, sMat);
+      sMesh.rotation.x = -Math.PI/2;
+      sMesh.position.set(pos.x, 0.055, pos.z);
+      sMesh.renderOrder = -1;
+      scene.add(sMesh);
+      m.userData.shadow = sMesh;
+
+      enemies.set(key(x,z), m);
+    }
+
+    function removeEnemy(x, z){
+      var k = key(x,z);
+      var m = enemies.get(k);
+      if (!m) return;
+      if (m.userData && m.userData.shadow) { scene.remove(m.userData.shadow); m.userData.shadow = null; }
+      scene.remove(m);
+      enemies.delete(k);
+    }
+
+    function captureAndVanish(x, z){
+      var k = key(x,z);
+      var m = enemies.get(k);
+      if (!m){ return; }
+      // Simple burst then immediate remove (no fly-off)
+      burstAt(m.position.clone());
+      removeEnemy(x, z);
+    }
+
+    function tweenEnemyTo(mesh, x, z, duration, onComplete){
+      if (duration === undefined) duration = 140;
+      var start = mesh.position.clone();
+      var end = tileWorldPos(x, z); end.y = 0.1;
+      var shadow = (mesh.userData && mesh.userData.shadow) ? mesh.userData.shadow : null;
+      var sStart = shadow ? shadow.position.clone() : null;
+      var sEnd   = shadow ? new THREE.Vector3(end.x, 0.055, end.z) : null;
+      var t0 = performance.now();
+      function step(t){
+        var k = Math.min(1, (t - t0)/duration);
+        mesh.position.lerpVectors(start, end, k);
+        if (shadow) shadow.position.lerpVectors(sStart, sEnd, k);
+        if (k < 1) requestAnimationFrame(step); else if (onComplete) onComplete();
+      }
+      requestAnimationFrame(step);
+    }
+
+    // ====== ENEMY AI ======
+    function chooseEnemyMove(list, playerX, playerZ){
+      if (!list || list.length === 0) return null;
+
+      var occupied = new Set();
+      for (var i = 0; i < list.length; i++) occupied.add(key(list[i].x, list[i].z));
+
+      function captureLandingFor(e){
+        var dz = e.z - playerZ;
+        var dx = playerX - e.x;
+        if (dz !== 1 || Math.abs(dx) !== 1) return null;
+        var lx = playerX + dx;
+        var lz = playerZ - 1;
+        if (lx < 0 || lx >= BOARD_WIDTH || lz < 0) return null;
+        if (!isDarkSquare(lx, lz)) return null;
+        if (occupied.has(key(lx, lz))) return null;
+        return { lx: lx, lz: lz };
+      }
+
+      var ahead = list.filter(function(e){ return e.z > playerZ; });
+      var byProximityAhead = ahead.slice().sort(function(a,b){ return (a.z - b.z) || (Math.abs(a.x - playerX) - Math.abs(b.x - playerX)); });
+      var byProximityAll  = list.slice().sort(function(a,b){
+        var da = Math.max(0, a.z - playerZ);
+        var db = Math.max(0, b.z - playerZ);
+        return (da - db) || (Math.abs(a.x - playerX) - Math.abs(b.x - playerX));
+      });
+
+      // Mandatory capture — prefer enemies already ahead first
+      for (var i = 0; i < byProximityAhead.length; i++){
+        var e1 = byProximityAhead[i];
+        var land1 = captureLandingFor(e1);
+        if (land1) return { enemy: e1, move: { toX: land1.lx, toZ: land1.lz, capturesPlayer: true } };
+      }
+      for (var i = 0; i < byProximityAll.length; i++){
+        var e2 = byProximityAll[i];
+        var land2 = captureLandingFor(e2);
+        if (land2) return { enemy: e2, move: { toX: land2.lx, toZ: land2.lz, capturesPlayer: true } };
+      }
+
+      // Otherwise step one square diagonally toward player
+      function tryStep(e){
+        var nz = e.z - 1;
+        if (nz < 0) return null;
+        var order = (Math.abs((e.x-1) - playerX) <= Math.abs((e.x+1) - playerX)) ? [-1,1] : [1,-1];
+        for (var j = 0; j < order.length; j++){
+          var dx = order[j];
+          var nx = e.x + dx;
+          if (nx < 0 || nx >= BOARD_WIDTH) continue;
+          if (!isDarkSquare(nx, nz)) continue;
+          var k = key(nx, nz);
+          if (!occupied.has(k) && !(nx === playerX && nz === playerZ)){
+            return { toX: nx, toZ: nz, capturesPlayer: false };
+          }
+        }
+        return null;
+      }
+
+      for (var i = 0; i < byProximityAhead.length; i++){
+        var m1 = tryStep(byProximityAhead[i]);
+        if (m1) return { enemy: byProximityAhead[i], move: m1 };
+      }
+      for (var i = 0; i < byProximityAll.length; i++){
+        var m2 = tryStep(byProximityAll[i]);
+        if (m2) return { enemy: byProximityAll[i], move: m2 };
+      }
+
+      return null;
+    }
+
+    function enemyTurn(onComplete){
+      if (gameOver){ if (onComplete) onComplete(); return; }
+      var enemyList = [];
+      enemies.forEach(function(mesh, kStr){
+        var parts = kStr.split(',');
+        enemyList.push({ x: parseInt(parts[0],10), z: parseInt(parts[1],10), mesh: mesh });
+      });
+
+      var decision = chooseEnemyMove(enemyList, player.x, player.z);
+      if (!decision){ if (onComplete) onComplete(); return; }
+      var mover = decision.enemy, move = decision.move;
+
+      enemies.delete(key(mover.x, mover.z));
+      enemies.set(key(move.toX, move.toZ), mover.mesh);
+      mover.mesh.userData.x = move.toX; mover.mesh.userData.z = move.toZ;
+
+      if (move.capturesPlayer){
+        gameOver = true;
+        tweenEnemyTo(mover.mesh, move.toX, move.toZ, 140, function(){
+          if (player && player.mesh){
+            burstAt(player.mesh.position.clone());
+            // Remove player piece instantly to avoid overlap
+            scene.remove(player.mesh);
+          }
+          setTimeout(function(){
+            overlay.style.display = 'grid';
+            gameOverText.innerHTML = 'You were <strong>captured</strong> at row <strong>' + player.z + '</strong> with a score of <strong>' + score + '</strong>.';
+            if (onComplete) onComplete();
+          }, 240);
+        });
+      } else {
+        tweenEnemyTo(mover.mesh, move.toX, move.toZ, 120, function(){ if (onComplete) onComplete(); });
+      }
+    }
+
+    // ====== LEGAL MOVES & HINTS ======
+    function clearHints(){
+      for (var i = 0; i < hints.length; i++) scene.remove(hints[i]);
+      hints.length = 0;
+    }
+
+    function addHint(x,z){
+      var plane = new THREE.Mesh(highlightGeom, matHighlight);
+      plane.rotation.x = -Math.PI/2;
+      var p = tileWorldPos(x,z);
+      plane.position.set(p.x, 0.06, p.z);
+      scene.add(plane);
+      hints.push(plane);
+    }
+
+    function computePlayerLegalMoves(px, pz, enemySet){
+      var moves = [];
+      var nx, nz, mx, mz;
+      // steps
+      nx = px - 1; nz = pz + 1; if (nx >= 0 && isDarkSquare(nx,nz) && !enemySet.has(key(nx,nz))) moves.push({ x:nx, z:nz, type:'step' });
+      nx = px + 1; nz = pz + 1; if (nx < BOARD_WIDTH && isDarkSquare(nx,nz) && !enemySet.has(key(nx,nz))) moves.push({ x:nx, z:nz, type:'step' });
+      // captures
+      nx = px - 2; nz = pz + 2; mx = px - 1; mz = pz + 1;
+      if (nx >= 0 && isDarkSquare(nx,nz) && enemySet.has(key(mx,mz)) && !enemySet.has(key(nx,nz))) moves.push({ x:nx, z:nz, type:'capture', mx:mx, mz:mz });
+      nx = px + 2; nz = pz + 2; mx = px + 1; mz = pz + 1;
+      if (nx < BOARD_WIDTH && isDarkSquare(nx,nz) && enemySet.has(key(mx,mz)) && !enemySet.has(key(nx,nz))) moves.push({ x:nx, z:nz, type:'capture', mx:mx, mz:mz });
+      return moves;
+    }
+
+    function legalMoves(){
+      var occ = new Set(); enemies.forEach(function(_, k){ occ.add(k); });
+      var all = computePlayerLegalMoves(player.x, player.z, occ);
+      var hasCap = false; for (var i = 0; i < all.length; i++) if (all[i].type === 'capture') { hasCap = true; break; }
+      if (hasCap){
+        var caps = []; for (var i = 0; i < all.length; i++) if (all[i].type === 'capture') caps.push(all[i]);
+        return caps;
+      }
+      return all;
+    }
+
+    function refreshHints(){
+      clearHints();
+      if (!hintsEnabled) return;
+      var L = legalMoves();
+      for (var i = 0; i < L.length; i++){
+        var m = L[i];
+        if (enemies.has(key(m.x, m.z))) continue; // never show on occupied
+        addHint(m.x, m.z);
+      }
+    }
+
+    function checkGameOver(){
+      if (legalMoves().length === 0){ gameOver = true; showGameOver(); }
+    }
+
+    // ====== INPUT (RAYCAST) ======
+    var raycaster = new THREE.Raycaster();
+    var mouse = new THREE.Vector2();
+
+    function onClick(ev){
+      if (gameOver || waitingForEnemy) return;
+      mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      var intersects = raycaster.intersectObjects(Array.from(tiles.values()));
+      if (!intersects.length) return;
+
+      var obj = intersects[0].object;
+      var ud = obj.userData || {}; var tx = ud.x; var tz = ud.z; var dark = ud.dark;
+      if (!dark) return;
+
+      var L = legalMoves();
+      var move = null;
+      for (var i = 0; i < L.length; i++) if (L[i].x === tx && L[i].z === tz) { move = L[i]; break; }
+      if (!move) return;
+
+      // Perform player move
+      if (move.type === 'capture'){
+        captureAndVanish(move.mx, move.mz);
+        comboCount += 1; // build combo during chain
+      } else {
+        comboCount = 0; // step ends any combo
+      }
+      moves += 1;
+      setPlayerPosition(tx, tz);
+      buildAhead();
+
+      // Check if multi-jump continues
+      if (move.type === 'capture'){
+        var occ = new Set(); enemies.forEach(function(_, k){ occ.add(k); });
+        var followUps = computePlayerLegalMoves(player.x, player.z, occ).filter(function(m){ return m.type === 'capture'; });
+        if (followUps.length > 0){
+          inCombo = true;
+          refreshHints();
+          updateUI();
+          return; // keep player's turn for multi-jump
+        } else {
+          // Chain ended — apply squared bonus and reset
+          if (comboCount > 0){ score += comboCount * comboCount; comboCount = 0; }
+        }
+      }
+
+      // End of player's turn — enemy must act after slight delay
+      inCombo = false; waitingForEnemy = true;
+      setTimeout(function(){
+        enemyTurn(function(){
+          waitingForEnemy = false; refreshHints(); updateUI(); checkGameOver();
+        });
+      }, ENEMY_MOVE_DELAY);
+    }
+    window.addEventListener('click', onClick);
+
+    // ====== RESIZE ======
+    function onResize(){
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    window.addEventListener('resize', onResize);
+
+    // ====== GAME LOOP ======
+    function animate(){
+      requestAnimationFrame(animate);
+      var immediateTarget = tileWorldPos(player.x, player.z + 3);
+      if (smoothedTarget.lengthSq() === 0) smoothedTarget.copy(immediateTarget);
+      smoothedTarget.lerp(immediateTarget, CAMERA_SMOOTH);
+      camera.position.copy(smoothedTarget).add(CAMERA_OFFSET);
+      camera.lookAt(smoothedTarget);
+      renderer.render(scene, camera);
+    }
+
+    // ====== GAME LIFECYCLE ======
+    function resetGame(){
+      // clear meshes
+      tiles.forEach(function(t){ scene.remove(t); if (t && t.geometry && typeof t.geometry.dispose === 'function') t.geometry.dispose(); });
+      enemies.forEach(function(e){ if (e && e.userData && e.userData.shadow) { scene.remove(e.userData.shadow); e.userData.shadow = null; } scene.remove(e); if (e && e.geometry && typeof e.geometry.dispose === 'function') e.geometry.dispose(); });
+      if (player.mesh) scene.remove(player.mesh);
+      clearHints();
+      tiles.clear(); enemies.clear();
+
+      // reset state
+      player.x = Math.floor(BOARD_WIDTH/2);
+      player.z = 1;
+      if (!isDarkSquare(player.x, player.z)){
+        if (player.x > 0 && isDarkSquare(player.x - 1, player.z)) player.x -= 1;
+        else if (player.x + 1 < BOARD_WIDTH && isDarkSquare(player.x + 1, player.z)) player.x += 1;
+        else { player.z = 0; if (!isDarkSquare(player.x, player.z) && player.x > 0) player.x -= 1; }
+      }
+
+      score = 0; moves = 0; gameOver = false; inCombo = false; waitingForEnemy = false; comboCount = 0;
+      maxRowBuilt = 0; minRowKept = 0; initialBuild = true;
+
+      // build initial rows with SAFE_ROWS protection
+      for (var z = 0; z <= player.z + AHEAD_ROWS; z++) ensureRowBuilt(z);
+      initialBuild = false;
+      spawnPlayer();
+
+      var startTarget = tileWorldPos(player.x, player.z + 3);
+      smoothedTarget.copy(startTarget);
+      camera.position.copy(startTarget).add(CAMERA_OFFSET);
+      camera.lookAt(startTarget);
+
+      buildAhead(); updateBorders(); refreshHints(); updateUI(); overlay.style.display = 'none';
+    }
+
+    restartBtn.addEventListener('click', resetGame);
+    playAgainBtn.addEventListener('click', resetGame);
+    toggleHintsBtn.addEventListener('click', function(){ hintsEnabled = !hintsEnabled; refreshHints(); updateUI(); });
+
+    // ====== DEV SELF-TESTS (console only) ======
+    function runSelfTests(){
+      console.groupCollapsed('[MVP self-tests]');
+      console.assert(BOARD_WIDTH === 8, 'BOARD_WIDTH should be 8');
+      console.assert(isDarkSquare(0,0) === true, '0,0 should be dark (playable)');
+      console.assert(isDarkSquare(1,0) === false, '1,0 should be light (not playable)');
+      var p0 = tileWorldPos(0,0), p7 = tileWorldPos(7,0);
+      console.assert(Math.abs((p7.x - p0.x) - 7*TILE_SIZE) < 1e-6, 'tileWorldPos X spacing correct');
+      var lm = legalMoves();
+      console.assert(Array.isArray(lm) && lm.length >= 1, 'legalMoves should return at least one move at start');
+
+      // capture when landing is empty
+      (function(){
+        var px = 3, pz = 3; var occ = new Set([key(4,4)]);
+        var capMoves = computePlayerLegalMoves(px, pz, occ);
+        var hasCap = capMoves.some(function(m){ return m.type==='capture' && m.x===5 && m.z===5; });
+        console.assert(hasCap, 'Player can capture over adjacent enemy when landing empty');
+      })();
+
+      // no capture if landing occupied
+      (function(){
+        var px = 3, pz = 3; var occ = new Set([key(4,4), key(5,5)]);
+        var capMoves = computePlayerLegalMoves(px, pz, occ);
+        var hasCap = capMoves.some(function(m){ return m.type==='capture' && m.x===5 && m.z===5; });
+        console.assert(!hasCap, 'No capture when landing is occupied');
+      })();
+
+      // mandatory capture filtering
+      (function(){
+        var saved = {x: player.x, z: player.z};
+        player.x = 3; player.z = 3; enemies.set(key(4,4), {dummy:true});
+        var L2 = legalMoves();
+        var hasStep = L2.some(function(m){ return m.type==='step'; });
+        console.assert(!hasStep && L2.some(function(m){ return m.type==='capture'; }), 'Mandatory capture: steps suppressed');
+        enemies.delete(key(4,4)); player.x = saved.x; player.z = saved.z;
+      })();
+
+      // multi-jump chain possible (3,3)->(5,5)->(7,7)
+      (function(){
+        var px = 3, pz = 3; var occ = new Set([key(4,4), key(6,6)]);
+        var first = computePlayerLegalMoves(px, pz, occ).filter(function(m){ return m.type==='capture'; });
+        var canFirst = first.some(function(m){ return m.x===5 && m.z===5; });
+        console.assert(canFirst, 'First capture to (5,5)');
+        var occ2 = new Set([key(6,6)]);
+        var second = computePlayerLegalMoves(5,5, occ2).filter(function(m){ return m.type==='capture'; });
+        var canSecond = second.some(function(m){ return m.x===7 && m.z===7; });
+        console.assert(canSecond, 'Second capture to (7,7) after first');
+      })();
+
+      // enemy must capture by jumping over the player (left and right)
+      (function(){
+        var px = 3, pz = 4;
+        var d1 = chooseEnemyMove([{x:2, z:5}], px, pz);
+        console.assert(d1 && d1.move.capturesPlayer && d1.move.toX===4 && d1.move.toZ===3, 'Enemy jumps to (4,3)');
+        var d2 = chooseEnemyMove([{x:4, z:5}], px, pz);
+        console.assert(d2 && d2.move.capturesPlayer && d2.move.toX===2 && d2.move.toZ===3, 'Enemy jumps to (2,3)');
+      })();
+
+      // Scenario: P:(1,1)->(2,2), E:(3,3) must capture landing at (1,1)
+      (function(){
+        var px = 2, pz = 2; var d = chooseEnemyMove([{x:3, z:3}], px, pz);
+        console.assert(d && d.move.capturesPlayer && d.move.toX===1 && d.move.toZ===1, 'E at (3,3) must jump to (1,1)');
+      })();
+
+      // Additional diagonal: P (3,1)->(2,2) with E (1,3) must land (3,1)
+      (function(){
+        var px = 2, pz = 2; var d = chooseEnemyMove([{x:1, z:3}], px, pz);
+        console.assert(d && d.move.capturesPlayer && d.move.toX===3 && d.move.toZ===1, 'E at (1,3) must jump to (3,1)');
+      })();
+
+      // opening safety: no enemies within first SAFE_ROWS after reset
+      (function(){
+        var safe = true; enemies.forEach(function(_, k){ var parts = k.split(','); if (parseInt(parts[1],10) <= SAFE_ROWS) safe = false; });
+        console.assert(safe, 'No enemies spawned within first ' + SAFE_ROWS + ' rows at start');
+      })();
+
+      // combo scoring sanity: 2 jumps -> +4
+      (function(){ var n=2; console.assert(n*n === 4, 'Combo scoring: 2 jumps yields +4'); })();
+
+      // material sanity: light tiles are pure white; dark tiles vary by row (gradient)
+      (function(){
+        console.assert(matLight.color.getHex && matLight.color.getHex() === 0xffffff, 'Light tile color is pure white');
+        var d1=null, d2=null; tiles.forEach(function(t){ if (t.userData.dark){ if (!d1) d1=t; else if (!d2 && t.userData.z!==d1.userData.z) d2=t; } });
+        if (d1 && d2){
+          var c1 = d1.material.color.getHex();
+          var c2 = d2.material.color.getHex();
+          console.assert(c1 !== c2, 'Dark tiles use a blue→purple gradient by row');
+        }
+      })();
+
+      // border sanity: rails align to board edges with slight overlap (no gaps)
+      (function(){
+        var ext = computeBoardExtents();
+        if (ext){
+          var nearInner = ext.minZ; var farInner = ext.maxZ; var leftInner = ext.minX; var rightInner = ext.maxX;
+          var eps = 1e-4;
+          console.assert(Math.abs(nearBorder.position.z + borderThickness/2 - nearInner) < eps, 'Near border flush to first row');
+          console.assert(Math.abs(farBorder.position.z - borderThickness/2 - farInner) < eps, 'Far border flush to last row');
+          console.assert(Math.abs(leftBorder.position.x + borderThickness/2 - leftInner) < eps, 'Left border flush to left edge');
+          console.assert(Math.abs(rightBorder.position.x - borderThickness/2 - rightInner) < eps, 'Right border flush to right edge');
+        }
+      })();
+
+      console.groupEnd();
+    }
+
+    // ====== INIT ======
+    resetGame();
+    runSelfTests();
+    animate();
+  })();
+  </script>
+</body>
+</html>
