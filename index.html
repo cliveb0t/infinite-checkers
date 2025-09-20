@@ -62,7 +62,7 @@
     const ENEMY_PROB_SPAN_ROWS = 100;
     const SAFE_ROWS = 3; // no spawns within first 3 rows at game start
     const HINTS_ENABLED_DEFAULT = true;
-    const ENEMY_MOVE_DELAY = 110; // slight lag between player & enemy
+    const ENEMY_MOVE_DELAY = 80; // slight lag between player & enemy
 
     // ====== THREE BASICS ======
     const scene = new THREE.Scene();
@@ -75,6 +75,7 @@
 
     // Camera smooth follow
     let CAMERA_OFFSET = new THREE.Vector3(0, 9.5, -6.5);
+    let TARGET_AHEAD = 3.5; // how many rows ahead the camera aims
     const CAMERA_SMOOTH = 0.09; // lower = smoother
     var smoothedTarget = new THREE.Vector3();
 
@@ -560,6 +561,7 @@
     // ====== INPUT (RAYCAST) ======
     var raycaster = new THREE.Raycaster();
     var mouse = new THREE.Vector2();
+    var groundPlane = new THREE.Plane(new THREE.Vector3(0,1,0), 0.05); // y = -0.05 plane (tile top)
 
     function handleTap(clientX, clientY){
       if (gameOver || waitingForEnemy) return;
@@ -567,12 +569,18 @@
       mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
-      var intersects = raycaster.intersectObjects(Array.from(tiles.values()));
-      if (!intersects.length) return;
 
-      var obj = intersects[0].object;
-      var ud = obj.userData || {}; var tx = ud.x; var tz = ud.z; var dark = ud.dark;
-      if (!dark) return;
+      // Faster: intersect the ground plane once, compute tile indices directly
+      var hitPoint = new THREE.Vector3();
+      if (!raycaster.ray.intersectPlane(groundPlane, hitPoint)) return;
+      // Convert world position to tile indices
+      var fx = (hitPoint.x / TILE_SIZE) + (BOARD_WIDTH - 1) / 2;
+      var fz = (hitPoint.z / TILE_SIZE);
+      var tx = Math.round(fx);
+      var tz = Math.round(fz);
+      if (tx < 0 || tx >= BOARD_WIDTH || tz < 0) return;
+      if (!tiles.has(key(tx, tz))) return; // outside built rows
+      if (!isDarkSquare(tx, tz)) return;
 
       var L = legalMoves();
       var move = null;
@@ -622,13 +630,19 @@
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
       renderer.setSize(w, h);
-      // Nudge camera offset for portrait so the board fits
-      if (aspect < 0.75) {
-        CAMERA_OFFSET.set(0, 12.5, -8.2);
-      } else if (aspect < 1.2) {
-        CAMERA_OFFSET.set(0, 10.8, -7.2);
-      } else {
+      // Adjust framing so the whole board width stays visible in portrait
+      if (aspect < 0.65) {          // tall phones
+        CAMERA_OFFSET.set(0, 18, -13);
+        TARGET_AHEAD = 4.8;
+      } else if (aspect < 0.9) {    // portrait/tablet
+        CAMERA_OFFSET.set(0, 15, -11);
+        TARGET_AHEAD = 4.4;
+      } else if (aspect < 1.3) {    // squarish
+        CAMERA_OFFSET.set(0, 12, -8.8);
+        TARGET_AHEAD = 4.0;
+      } else {                       // widescreen
         CAMERA_OFFSET.set(0, 9.5, -6.5);
+        TARGET_AHEAD = 3.5;
       }
     }
     window.addEventListener('resize', onResize);
@@ -636,7 +650,7 @@
     // ====== GAME LOOP ======
     function animate(){
       requestAnimationFrame(animate);
-      var immediateTarget = tileWorldPos(player.x, player.z + 3);
+      var immediateTarget = tileWorldPos(player.x, player.z + TARGET_AHEAD);
       if (smoothedTarget.lengthSq() === 0) smoothedTarget.copy(immediateTarget);
       smoothedTarget.lerp(immediateTarget, CAMERA_SMOOTH);
       camera.position.copy(smoothedTarget).add(CAMERA_OFFSET);
@@ -670,7 +684,7 @@
       initialBuild = false;
       spawnPlayer();
 
-      var startTarget = tileWorldPos(player.x, player.z + 3);
+      var startTarget = tileWorldPos(player.x, player.z + TARGET_AHEAD);
       smoothedTarget.copy(startTarget);
       camera.position.copy(startTarget).add(CAMERA_OFFSET);
       camera.lookAt(startTarget);
@@ -791,6 +805,7 @@
     // ====== INIT ======
     resetGame();
     runSelfTests();
+    onResize();
     animate();
   })();
   </script>
