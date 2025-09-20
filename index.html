@@ -2,19 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>Infinite Checkers — MVP</title>
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden;
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none;
       background: linear-gradient(135deg, #0b1e5b 0%, #3f51b5 40%, #8e24aa 100%);
       background-attachment: fixed;
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
     #ui { position: fixed; top: 12px; left: 12px; z-index: 10; color: #e8eef9; background: rgba(15,20,30,.6); padding: 10px 12px; border-radius: 12px; backdrop-filter: blur(6px); box-shadow: 0 6px 20px rgba(0,0,0,.25); }
-    #ui h1 { margin: 0 0 6px 0; font-size: 16px; font-weight: 700; letter-spacing: .3px; opacity: .85; }
+    #ui h1 { margin: 0 0 6px 0; font-size: clamp(14px, 2.2vw, 18px); font-weight: 700; letter-spacing: .3px; opacity: .85; }
     #meta { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .badge { font-size: 13px; padding: 6px 10px; border-radius: 999px; background: #1a2333; border: 1px solid #243149; }
+    .badge { font-size: clamp(12px, 2vw, 14px); padding: 6px 10px; border-radius: 999px; background: #1a2333; border: 1px solid #243149; }
     #controls { margin-top: 10px; display: flex; gap: 8px; }
-    button { appearance: none; border: 1px solid #2a3750; background: #162133; color: #dfe8fb; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-weight: 600; }
+    button { appearance: none; border: 1px solid #2a3750; background: #162133; color: #dfe8fb; padding: 10px 14px; border-radius: 10px; cursor: pointer; font-weight: 600; font-size: clamp(12px, 2.2vw, 14px);} 
     button:hover { background: #1b2940; }
 
     #message { position: fixed; inset: 0; display: none; place-items: center; z-index: 15; }
@@ -22,7 +22,7 @@
     #message h2 { margin: 0 0 8px 0; font-size: 20px; }
     #message p { margin: 0 0 14px 0; opacity: .9; }
 
-    .hint { position: fixed; bottom: 12px; left: 12px; right: 12px; z-index: 10; color: #a9b7d6; text-align: center; opacity: .8; font-size: 13px; }
+    .hint { position: fixed; bottom: env(safe-area-inset-bottom, 12px); left: 12px; right: 12px; z-index: 10; color: #a9b7d6; text-align: center; opacity: .8; font-size: clamp(11px, 2vw, 13px);} 
   </style>
 </head>
 <body>
@@ -39,7 +39,7 @@
       <button id="toggleHintsBtn" title="Show/hide legal move highlights">Toggle Hints</button>
     </div>
   </div>
-  <div class="hint">Click one of the two forward diagonal squares to move. Jump over an enemy to capture it. Survive as long as you can!</div>
+  <div class="hint">Tap or click one of the two forward diagonal squares to move. Jump over an enemy to capture it. Survive as long as you can!</div>
 
   <div id="message">
     <div class="card">
@@ -68,12 +68,13 @@
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1000);
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     document.body.appendChild(renderer.domElement);
 
     // Camera smooth follow
-    const CAMERA_OFFSET = new THREE.Vector3(0, 9.5, -6.5);
+    let CAMERA_OFFSET = new THREE.Vector3(0, 9.5, -6.5);
     const CAMERA_SMOOTH = 0.09; // lower = smoother
     var smoothedTarget = new THREE.Vector3();
 
@@ -560,10 +561,11 @@
     var raycaster = new THREE.Raycaster();
     var mouse = new THREE.Vector2();
 
-    function onClick(ev){
+    function handleTap(clientX, clientY){
       if (gameOver || waitingForEnemy) return;
-      mouse.x = (ev.clientX / window.innerWidth) * 2 - 1;
-      mouse.y = -(ev.clientY / window.innerHeight) * 2 + 1;
+      const rect = renderer.domElement.getBoundingClientRect();
+      mouse.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      mouse.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
       var intersects = raycaster.intersectObjects(Array.from(tiles.values()));
       if (!intersects.length) return;
@@ -577,47 +579,57 @@
       for (var i = 0; i < L.length; i++) if (L[i].x === tx && L[i].z === tz) { move = L[i]; break; }
       if (!move) return;
 
-      // Perform player move
       if (move.type === 'capture'){
         captureAndVanish(move.mx, move.mz);
-        comboCount += 1; // build combo during chain
+        comboCount += 1;
       } else {
-        comboCount = 0; // step ends any combo
+        comboCount = 0;
       }
       moves += 1;
       setPlayerPosition(tx, tz);
       buildAhead();
 
-      // Check if multi-jump continues
       if (move.type === 'capture'){
         var occ = new Set(); enemies.forEach(function(_, k){ occ.add(k); });
         var followUps = computePlayerLegalMoves(player.x, player.z, occ).filter(function(m){ return m.type === 'capture'; });
         if (followUps.length > 0){
-          inCombo = true;
-          refreshHints();
-          updateUI();
-          return; // keep player's turn for multi-jump
-        } else {
-          // Chain ended — apply squared bonus and reset
-          if (comboCount > 0){ score += comboCount * comboCount; comboCount = 0; }
-        }
+          inCombo = true; refreshHints(); updateUI(); return;
+        } else { if (comboCount > 0){ score += comboCount * comboCount; comboCount = 0; } }
       }
 
-      // End of player's turn — enemy must act after slight delay
       inCombo = false; waitingForEnemy = true;
       setTimeout(function(){
-        enemyTurn(function(){
-          waitingForEnemy = false; refreshHints(); updateUI(); checkGameOver();
-        });
+        enemyTurn(function(){ waitingForEnemy = false; refreshHints(); updateUI(); checkGameOver(); });
       }, ENEMY_MOVE_DELAY);
     }
-    window.addEventListener('click', onClick);
+
+    // Mouse click
+    renderer.domElement.addEventListener('click', function(e){ handleTap(e.clientX, e.clientY); });
+    // Touch tap
+    renderer.domElement.addEventListener('touchstart', function(e){
+      if (e.touches && e.touches.length > 0){
+        const t = e.touches[0];
+        handleTap(t.clientX, t.clientY);
+      }
+      e.preventDefault();
+    }, { passive: false });
 
     // ====== RESIZE ======
     function onResize(){
-      camera.aspect = window.innerWidth / window.innerHeight;
+      const w = window.innerWidth, h = window.innerHeight;
+      const aspect = w / Math.max(1, h);
+      camera.aspect = aspect;
       camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+      renderer.setSize(w, h);
+      // Nudge camera offset for portrait so the board fits
+      if (aspect < 0.75) {
+        CAMERA_OFFSET.set(0, 12.5, -8.2);
+      } else if (aspect < 1.2) {
+        CAMERA_OFFSET.set(0, 10.8, -7.2);
+      } else {
+        CAMERA_OFFSET.set(0, 9.5, -6.5);
+      }
     }
     window.addEventListener('resize', onResize);
 
