@@ -50,7 +50,7 @@
   </div>
 
   <!-- Three.js -->
-  <script src="https://unpkg.com/three@0.152.2/build/three.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
   <script>
   (function(){
     // ====== BASIC CONFIG ======
@@ -630,22 +630,27 @@
       renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
       renderer.setSize(w, h);
 
-      // Mobile/portrait tuning only; desktop stays classic framing
-      if (aspect < 0.9) {
-        // Zoom OUT more on mobile: fit ~100% of board width
-        camera.fov = 68; // slightly wider than before
+      // Mobile/portrait tuning: ensure full board visibility
+      if (aspect < 1.1) { // Mobile and narrow tablets
+        // Calculate required distance to fit the board width with some padding
+        const boardWorldWidth = BOARD_WIDTH * TILE_SIZE;
+        const paddingFactor = 1.25; // 25% padding on sides
+        const targetVisibleWidth = boardWorldWidth * paddingFactor;
+        
+        // Adjust FOV for mobile - wider view
+        camera.fov = 75;
         camera.aspect = aspect;
         camera.updateProjectionMatrix();
-
-        const boardW = BOARD_WIDTH * TILE_SIZE;
-        const visibleW = boardW * 1.0; // show full board width
-        const halfVis = visibleW * 0.5;
+        
+        // Calculate the required distance based on FOV and desired visible width
+        const halfWidth = targetVisibleWidth * 0.5;
         const vFovRad = camera.fov * Math.PI / 180;
-        const d = (halfVis) / (Math.tan(vFovRad * 0.5) * aspect);
-
-        const dir = CAMERA_OFFSET.clone().normalize();
-        CAMERA_OFFSET.copy(dir.multiplyScalar(d));
-        TARGET_AHEAD = 4.2;
+        const requiredDistance = halfWidth / (Math.tan(vFovRad * 0.5) * aspect);
+        
+        // Set camera offset to maintain the viewing angle but at the right distance
+        const offsetDirection = new THREE.Vector3(0, 1, -0.68).normalize(); // Slightly higher and back
+        CAMERA_OFFSET.copy(offsetDirection.clone().multiplyScalar(requiredDistance));
+        TARGET_AHEAD = 4.8; // Look further ahead on mobile
       } else {
         // Desktop/widescreen: original framing
         camera.fov = 55;
@@ -708,21 +713,35 @@
 
     // ====== DEV SELF-TESTS (console only) ======
     function runSelfTests(){
-      console.groupCollapsed('[MVP self-tests]');
-      console.assert(BOARD_WIDTH === 8, 'BOARD_WIDTH should be 8');
-      console.assert(isDarkSquare(0,0) === true, '0,0 should be dark (playable)');
-      console.assert(isDarkSquare(1,0) === false, '1,0 should be light (not playable)');
+      if (typeof console.groupCollapsed === 'function') {
+        console.groupCollapsed('[MVP self-tests]');
+      } else {
+        console.log('[MVP self-tests]');
+      }
+      
+      // Helper function for assertions
+      function assert(condition, message) {
+        if (!condition) {
+          console.error('Assertion failed: ' + message);
+        } else {
+          console.log('✓ ' + message);
+        }
+      }
+      
+      assert(BOARD_WIDTH === 8, 'BOARD_WIDTH should be 8');
+      assert(isDarkSquare(0,0) === true, '0,0 should be dark (playable)');
+      assert(isDarkSquare(1,0) === false, '1,0 should be light (not playable)');
       var p0 = tileWorldPos(0,0), p7 = tileWorldPos(7,0);
-      console.assert(Math.abs((p7.x - p0.x) - 7*TILE_SIZE) < 1e-6, 'tileWorldPos X spacing correct');
+      assert(Math.abs((p7.x - p0.x) - 7*TILE_SIZE) < 1e-6, 'tileWorldPos X spacing correct');
       var lm = legalMoves();
-      console.assert(Array.isArray(lm) && lm.length >= 1, 'legalMoves should return at least one move at start');
+      assert(Array.isArray(lm) && lm.length >= 1, 'legalMoves should return at least one move at start');
 
       // capture when landing is empty
       (function(){
         var px = 3, pz = 3; var occ = new Set([key(4,4)]);
         var capMoves = computePlayerLegalMoves(px, pz, occ);
         var hasCap = capMoves.some(function(m){ return m.type==='capture' && m.x===5 && m.z===5; });
-        console.assert(hasCap, 'Player can capture over adjacent enemy when landing empty');
+        assert(hasCap, 'Player can capture over adjacent enemy when landing empty');
       })();
 
       // no capture if landing occupied
@@ -730,7 +749,7 @@
         var px = 3, pz = 3; var occ = new Set([key(4,4), key(5,5)]);
         var capMoves = computePlayerLegalMoves(px, pz, occ);
         var hasCap = capMoves.some(function(m){ return m.type==='capture' && m.x===5 && m.z===5; });
-        console.assert(!hasCap, 'No capture when landing is occupied');
+        assert(!hasCap, 'No capture when landing is occupied');
       })();
 
       // mandatory capture filtering
@@ -739,7 +758,7 @@
         player.x = 3; player.z = 3; enemies.set(key(4,4), {dummy:true});
         var L2 = legalMoves();
         var hasStep = L2.some(function(m){ return m.type==='step'; });
-        console.assert(!hasStep && L2.some(function(m){ return m.type==='capture'; }), 'Mandatory capture: steps suppressed');
+        assert(!hasStep && L2.some(function(m){ return m.type==='capture'; }), 'Mandatory capture: steps suppressed');
         enemies.delete(key(4,4)); player.x = saved.x; player.z = saved.z;
       })();
 
@@ -748,51 +767,51 @@
         var px = 3, pz = 3; var occ = new Set([key(4,4), key(6,6)]);
         var first = computePlayerLegalMoves(px, pz, occ).filter(function(m){ return m.type==='capture'; });
         var canFirst = first.some(function(m){ return m.x===5 && m.z===5; });
-        console.assert(canFirst, 'First capture to (5,5)');
+        assert(canFirst, 'First capture to (5,5)');
         var occ2 = new Set([key(6,6)]);
         var second = computePlayerLegalMoves(5,5, occ2).filter(function(m){ return m.type==='capture'; });
         var canSecond = second.some(function(m){ return m.x===7 && m.z===7; });
-        console.assert(canSecond, 'Second capture to (7,7) after first');
+        assert(canSecond, 'Second capture to (7,7) after first');
       })();
 
       // enemy must capture by jumping over the player (left and right)
       (function(){
         var px = 3, pz = 4;
         var d1 = chooseEnemyMove([{x:2, z:5}], px, pz);
-        console.assert(d1 && d1.move.capturesPlayer && d1.move.toX===4 && d1.move.toZ===3, 'Enemy jumps to (4,3)');
+        assert(d1 && d1.move.capturesPlayer && d1.move.toX===4 && d1.move.toZ===3, 'Enemy jumps to (4,3)');
         var d2 = chooseEnemyMove([{x:4, z:5}], px, pz);
-        console.assert(d2 && d2.move.capturesPlayer && d2.move.toX===2 && d2.move.toZ===3, 'Enemy jumps to (2,3)');
+        assert(d2 && d2.move.capturesPlayer && d2.move.toX===2 && d2.move.toZ===3, 'Enemy jumps to (2,3)');
       })();
 
       // Scenario: P:(1,1)->(2,2), E:(3,3) must capture landing at (1,1)
       (function(){
         var px = 2, pz = 2; var d = chooseEnemyMove([{x:3, z:3}], px, pz);
-        console.assert(d && d.move.capturesPlayer && d.move.toX===1 && d.move.toZ===1, 'E at (3,3) must jump to (1,1)');
+        assert(d && d.move.capturesPlayer && d.move.toX===1 && d.move.toZ===1, 'E at (3,3) must jump to (1,1)');
       })();
 
       // Additional diagonal: P (3,1)->(2,2) with E (1,3) must land (3,1)
       (function(){
         var px = 2, pz = 2; var d = chooseEnemyMove([{x:1, z:3}], px, pz);
-        console.assert(d && d.move.capturesPlayer && d.move.toX===3 && d.move.toZ===1, 'E at (1,3) must jump to (3,1)');
+        assert(d && d.move.capturesPlayer && d.move.toX===3 && d.move.toZ===1, 'E at (1,3) must jump to (3,1)');
       })();
 
       // opening safety: no enemies within first SAFE_ROWS after reset
       (function(){
         var safe = true; enemies.forEach(function(_, k){ var parts = k.split(','); if (parseInt(parts[1],10) <= SAFE_ROWS) safe = false; });
-        console.assert(safe, 'No enemies spawned within first ' + SAFE_ROWS + ' rows at start');
+        assert(safe, 'No enemies spawned within first ' + SAFE_ROWS + ' rows at start');
       })();
 
       // combo scoring sanity: 2 jumps -> +4
-      (function(){ var n=2; console.assert(n*n === 4, 'Combo scoring: 2 jumps yields +4'); })();
+      (function(){ var n=2; assert(n*n === 4, 'Combo scoring: 2 jumps yields +4'); })();
 
       // material sanity: light tiles are pure white; dark tiles vary by row (gradient)
       (function(){
-        console.assert(matLight.color.getHex && matLight.color.getHex() === 0xffffff, 'Light tile color is pure white');
+        assert(matLight.color.getHex && matLight.color.getHex() === 0xffffff, 'Light tile color is pure white');
         var d1=null, d2=null; tiles.forEach(function(t){ if (t.userData.dark){ if (!d1) d1=t; else if (!d2 && t.userData.z!==d1.userData.z) d2=t; } });
         if (d1 && d2){
           var c1 = d1.material.color.getHex();
           var c2 = d2.material.color.getHex();
-          console.assert(c1 !== c2, 'Dark tiles use a blue→purple gradient by row');
+          assert(c1 !== c2, 'Dark tiles use a blue→purple gradient by row');
         }
       })();
 
@@ -802,14 +821,16 @@
         if (ext){
           var nearInner = ext.minZ; var farInner = ext.maxZ; var leftInner = ext.minX; var rightInner = ext.maxX;
           var eps = 1e-4;
-          console.assert(Math.abs(nearBorder.position.z + borderThickness/2 - nearInner) < eps, 'Near border flush to first row');
-          console.assert(Math.abs(farBorder.position.z - borderThickness/2 - farInner) < eps, 'Far border flush to last row');
-          console.assert(Math.abs(leftBorder.position.x + borderThickness/2 - leftInner) < eps, 'Left border flush to left edge');
-          console.assert(Math.abs(rightBorder.position.x - borderThickness/2 - rightInner) < eps, 'Right border flush to right edge');
+          assert(Math.abs(nearBorder.position.z + borderThickness/2 - nearInner) < eps, 'Near border flush to first row');
+          assert(Math.abs(farBorder.position.z - borderThickness/2 - farInner) < eps, 'Far border flush to last row');
+          assert(Math.abs(leftBorder.position.x + borderThickness/2 - leftInner) < eps, 'Left border flush to left edge');
+          assert(Math.abs(rightBorder.position.x - borderThickness/2 - rightInner) < eps, 'Right border flush to right edge');
         }
       })();
 
-      console.groupEnd();
+      if (typeof console.groupEnd === 'function') {
+        console.groupEnd();
+      }
     }
 
     // ====== INIT ======
