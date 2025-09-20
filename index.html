@@ -632,13 +632,13 @@
 
       // Mobile/portrait tuning: ensure full board visibility
       if (aspect < 1.1) { // Mobile and narrow tablets
-        // Calculate required distance to fit the board width with some padding
+        // Calculate required distance to fit the board width with generous padding
         const boardWorldWidth = BOARD_WIDTH * TILE_SIZE;
-        const paddingFactor = 1.25; // 25% padding on sides
+        const paddingFactor = 1.6; // 60% padding on sides (much more generous)
         const targetVisibleWidth = boardWorldWidth * paddingFactor;
         
-        // Adjust FOV for mobile - wider view
-        camera.fov = 75;
+        // Much wider FOV for mobile - zoom out significantly
+        camera.fov = 85;
         camera.aspect = aspect;
         camera.updateProjectionMatrix();
         
@@ -647,10 +647,10 @@
         const vFovRad = camera.fov * Math.PI / 180;
         const requiredDistance = halfWidth / (Math.tan(vFovRad * 0.5) * aspect);
         
-        // Set camera offset to maintain the viewing angle but at the right distance
-        const offsetDirection = new THREE.Vector3(0, 1, -0.68).normalize(); // Slightly higher and back
-        CAMERA_OFFSET.copy(offsetDirection.clone().multiplyScalar(requiredDistance));
-        TARGET_AHEAD = 4.8; // Look further ahead on mobile
+        // Position camera higher and further back for better overview
+        const offsetDirection = new THREE.Vector3(0, 1.2, -0.5).normalize();
+        CAMERA_OFFSET.copy(offsetDirection.clone().multiplyScalar(requiredDistance * 1.2));
+        TARGET_AHEAD = 5.5; // Look even further ahead on mobile
       } else {
         // Desktop/widescreen: original framing
         camera.fov = 55;
