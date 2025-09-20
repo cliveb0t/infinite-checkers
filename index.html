@@ -632,13 +632,13 @@
 
       // Mobile/portrait tuning only; desktop stays classic framing
       if (aspect < 0.9) {
-        // Slightly zoom OUT compared to last change: show ~98.5% of board width
-        camera.fov = 67.5; // a hair wider than 67 → a touch farther
+        // Zoom OUT more on mobile: fit ~100% of board width
+        camera.fov = 68; // slightly wider than before
         camera.aspect = aspect;
         camera.updateProjectionMatrix();
 
         const boardW = BOARD_WIDTH * TILE_SIZE;
-        const visibleW = boardW * 0.985; // show 98.5% of board width
+        const visibleW = boardW * 1.0; // show full board width
         const halfVis = visibleW * 0.5;
         const vFovRad = camera.fov * Math.PI / 180;
         const d = (halfVis) / (Math.tan(vFovRad * 0.5) * aspect);
