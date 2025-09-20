@@ -630,18 +630,18 @@
       renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
       renderer.setSize(w, h);
 
-      // Apply tight width-fit ONLY on mobile/portrait. Restore classic framing on wide screens.
+      // Mobile/portrait tuning only; desktop stays classic framing
       if (aspect < 0.9) {
-        // Mobile/portrait: slightly wider FOV and exact width fit.
-        camera.fov = 68; // wider to avoid vertical clipping
+        // Zoom in a bit more than the width-fit: show ~94% of board width
+        camera.fov = 66; // slightly narrower than 68 → a touch more zoom
         camera.aspect = aspect;
         camera.updateProjectionMatrix();
 
         const boardW = BOARD_WIDTH * TILE_SIZE;
-        const halfBoard = boardW * 0.5;
-        const pad = boardW * 0.02; // 2% padding so borders just touch
+        const visibleW = boardW * 0.94; // < 100% makes it closer (small edge crop ok)
+        const halfVis = visibleW * 0.5;
         const vFovRad = camera.fov * Math.PI / 180;
-        const d = (halfBoard + pad) / (Math.tan(vFovRad * 0.5) * aspect);
+        const d = (halfVis) / (Math.tan(vFovRad * 0.5) * aspect);
 
         const dir = CAMERA_OFFSET.clone().normalize();
         CAMERA_OFFSET.copy(dir.multiplyScalar(d));
